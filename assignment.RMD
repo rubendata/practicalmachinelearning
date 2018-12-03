@@ -1,0 +1,243 @@
+---
+title: "Practical Machine Learning Assignment"
+output: html_document
+---
+
+Practical Machine Learning - Course Project
+===============================================
+
+
+Ruben Simon
+October 02, 2018
+
+
+#1. Synposis
+
+
+The goal of this project is to create a model that predicts the manner in which subjects excecuted an excerise ('classe' variable in the data set). 
+
+
+The model will be performed on 20 different test cases.
+
+The classe variable ranges from a to E with the following meaning:
+
+
+Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: 
+
+- exactly according to the specification (Class A), 
+- throwing the elbows to the front (Class B),
+- lifting the dumbbell only halfway (Class C), 
+- lowering the dumbbell only halfway (Class D) and 
+- throwing the hips to the front (Class E).
+
+
+#2. Data Processing
+
+In this step I load the data to the working directory and read the csv. A training and a test set is loaded. They contain 160 columns.
+
+```{r, cache=TRUE}
+
+setwd("C:/Users/Ruben/Desktop/John Hopkins/Kurs 8 - Practical Machine Learning/assignment")
+training <- read.csv("./pml-training.csv", stringsAsFactors = F, na.strings ="")
+testing <- read.csv("./pml-testing.csv", stringsAsFactors = F,na.strings ="")
+
+
+```
+
+As on can see many of the 160 columns where nearly all values are NA oder "NA" (string). These variables will be excluded in the following step.
+Furthermore the variables all variables regarding user name, id, time etc. will be removed because they are not relevant for prediction. In the model we want to examine which movement leads to a certain prediction of the variable "classe".
+
+```{r}
+###get rid of NA values
+SelectCols <- sapply(training, function(x) sum(!is.na(x))/length(x)) #calculate percentage of not NA values in relation to total rows
+
+SelectCols <- as.data.frame(SelectCols); names(SelectCols) = c("percentageNa")
+SelectCols$variable <- rownames(SelectCols)
+
+
+fewNA <- ifelse(SelectCols$percentageNa >= 0.7, yes = T,no = F) #set rows with high percentage of not NA to TRUE to use these colums later
+
+
+SelectCols <- SelectCols[fewNA,2] #get the boolean and the colnames to use later
+training.selection <- training[,SelectCols]#reduce the training set. use only columns that do not have many NA values
+
+
+
+###same procedure we did for NA values we use here for "NA" string
+SelectCols2 <- sapply(training.selection, function(x) sum(ifelse(x =="NA", yes = T, no = F))/length(x)) #calculate the percentage of "NA" string in relation to total rows
+
+SelectCols2 <- as.data.frame(SelectCols2); names(SelectCols2) = c("percentageNAString")
+SelectCols2$variable <- rownames(SelectCols2)
+
+
+fewNA2 <-ifelse(SelectCols2<0.5 | is.na(SelectCols2), yes = T, no = F) #set TRUE if NA String percentage is low to keep the columns later, otherweise False for not using them later
+
+SelectCols2 <- SelectCols2[fewNA2,2] #get only the columns with not many "NA" Strings
+training.selection2 <- training.selection[,SelectCols2] #reduce the training.selection set. use only columns that do not have many NA strings
+training.selection2 <- training.selection2[,3:60] #we do not want to use x and name for modelling
+training.selection2 <- training.selection2[,3:58] #raw timestamp seem to be the same like cvtd_timestamp, so we skip it
+training.selection2 <- training.selection2[,4:56]#new_window and num_window do not seem to make sense for predicting classe. unfortunately we do not have information what this means. I think it means if a new window was opened in the software. so I leave it out
+
+training.selection2$classe <- as.factor(training.selection2$classe)
+#training.selection2$cvtd_timestamp <- strptime(training.selection2$cvtd_timestamp, "%d/%m/%Y %H:%M", tz = "Europe/London")
+```
+
+
+For cross validation purpose I split the training data into a train set and a test set in order to fit a model to train and than to predict. The fitted model will be used to predict on the testing data and do find out the prediction accuracy.
+```{r}
+library(caret)
+library(kernlab)
+
+#split data into training set (80%) and test set
+inTrain <- createDataPartition(y=training.selection2$classe, p=0.8, list = F)
+
+train <- training.selection2[inTrain,]
+test <- training.selection2[-inTrain,]
+
+```
+
+#3. Exploratory data analysis
+As there are still 53 variables left I try to reduce complexity and to find out which variables produce high variance in relation to classe.
+Therefore I calcualte the mean for the 53 variables for each classe type. 
+
+So I can find out for example: Is the mean of variable X for classe = A higher than for classe = B? If the means of Variable X have a high standard deviation this can be a signal that this could be an explaining variable. To make the standard deviation comparable between the variables I calculate the relation of the standard deviation to the mean (=standardized standard deviation).
+
+So in the first step I create a data frame to have the mean for each variable for each type of classe.
+One can see that there is a high standardized standard deviation in means for example for gyros_belt_x or yaw_arm.
+```{r}
+
+#split data for each classe type
+split <- split(train, train$classe)
+
+#calculate mean for all variables for each classe
+A <- data.frame(split[1]); A <- as.data.frame(sapply(A[1:52], mean)); names(A) <- c("A"); A$variable <- rownames(A); A$variable <- sub("A.","",A$variable);A <- A[,1:2]
+B <- data.frame(split[2]); B <- as.data.frame(sapply(B[1:52], mean)); names(B) <- c("B")
+C <- data.frame(split[3]); C <- as.data.frame(sapply(C[1:52], mean)); names(C) <- c("C")
+D <- data.frame(split[4]); D <- as.data.frame(sapply(D[1:52], mean)); names(D) <- c("D")
+E <- data.frame(split[5]); E <- as.data.frame(sapply(E[1:52], mean)); names(E) <- c("E")
+
+
+#create a data frame to compare means for all variables
+compare <- data.frame(variable = c(1:52)); compare$variable <- A$variable; compare$A <- A$A; compare$B <- B$B; compare$C <- C$C; compare$D <- D$D; compare$E <- E$E 
+
+
+#round all values 3 digits
+for (i in 2:ncol(compare)) {
+    compare[[i]]<- round(compare[[i]],3)
+}
+
+
+#calculate standard deviation row wise (so for each variable)
+compare$sd <- c()
+for (i in 1:nrow(compare)) {
+      compare$sd[i] <- round(sd(compare[i,2:6]),3)
+      
+}
+
+compare$rowmean <- c()
+for (i in 1:nrow(compare)) {
+      compare$rowmean[i] <- round(rowMeans(compare[i,2:6]),3)
+      
+}
+
+#calculate standardized sd for each variable
+compare$sd.standardized <- c()
+for (i in 1:nrow(compare)) {
+      compare$sd.standardized[i] <- round(compare$sd[i]/compare$rowmean[i],2)
+      
+}
+
+#select only the standardized standard deviation
+compare <- compare[order(compare$sd.standardized),]
+
+head(compare,1); tail(compare,1)
+
+```
+
+
+#4. Feature selection
+In order to reduce complexity for the model the goal is to reduce the variables and find the ones that explain classe the best. Therefore I only use variables that have an absolute standardized standard deviation of higher than 0.4. So 23 of the 53 variables are used for the model.
+
+
+```{r}
+
+#select variables with standardized standard deviation greater than 0.4
+impact0.4<- ifelse(abs(compare$sd.standardized) >= 0.4, yes = T, no = F) 
+
+
+#select the relevant variable names
+compare.impact.0.4 <- compare[impact0.4,1]
+```
+
+#5. Model selection / training
+
+For validation purpose I run three differen classification models using the caret package:
+
+- a random forest ('rf'), 
+- a Stochastic Gradient Boosting ('gbm')
+- a CART model ('rpart')
+
+
+```{r, cache=TRUE}
+#reduce training set for the relevant variables
+train.impact.0.4 <- train[,c(compare.impact.0.4,"classe")]
+
+set.seed(123)
+
+#train a random forest model for the relevant variables
+modFit.rf.04 <- train(classe~., data = train.impact.0.4, method="rf", ntree = 5)
+```
+
+```{r, cache=TRUE}
+modFit.gbm.04 <- train(classe~., data = train.impact.0.4, method="gbm", verbose = FALSE)
+```
+
+```{r, cache=TRUE}
+modFit.rpart.04 <- train(classe~., data = train.impact.0.4, method="rpart")
+```
+
+```{r}
+pred.rf.04 <- predict(modFit.rf.04, newdata = test)
+pred.gbm.04 <- predict(modFit.gbm.04, newdata = test)
+pred.rpart.04 <- predict(modFit.rpart.04, newdata = test)
+
+```
+
+The models have the following accuracy:
+
+- random forest: 0.9954
+- Stochastic Gradient Boosting: 0.9449
+- CART: 0.5817
+
+So the random forest model will be used.
+```{r}
+confusionMatrix(pred.rf.04, test$classe)
+confusionMatrix(pred.gbm.04, test$classe)
+confusionMatrix(pred.rpart.04, test$classe)
+
+```
+
+
+The out of sample error is 2.097618.
+```{r}
+
+pred.rf.04.ct <- table(pred.rf.04)
+trueval.ct <- table(test$classe)
+results <- rbind(pred.rf.04.ct, trueval.ct)
+results
+results[1,]-results[2,]
+
+rmse.outofsample <- sqrt(mean((results[1,] - results[2,])^2))
+rmse.outofsample
+
+```
+
+#6 Prediction on testing data
+Now the model is used on the testing data in order to predict 'classe'.
+
+```{r}
+pred <- predict(modFit.rf.04, newdata=testing)
+table(pred)
+
+```
+
